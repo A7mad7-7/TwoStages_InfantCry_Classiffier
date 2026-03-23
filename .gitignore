@@ -1,0 +1,9 @@
+venv/
+__pycache__/
+*.zip
+Stage_One_Data/
+Stage_Two_Data/
+clean_data/
+dataset/
+*.pyc
+*.log

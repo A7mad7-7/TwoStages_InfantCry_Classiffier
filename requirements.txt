@@ -1,0 +1,15 @@
+# Core Dependencies
+librosa
+soundfile
+tqdm
+numpy
+matplotlib
+
+# Machine Learning
+tensorflow
+scikit-learn
+xgboost
+
+# Utilities
+pathlib
+scipy
