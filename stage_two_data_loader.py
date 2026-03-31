@@ -10,12 +10,12 @@ from typing import List, Tuple, Dict
 from collections import Counter
 
 import numpy as np
-import tensorflow as tf
 from sklearn.model_selection import train_test_split
+from tqdm import tqdm
 
 
 class StageTwoDataLoader:
-    """Handles Phase 2 dataset discovery, mapping to macro-classes, and tf.data."""
+    """Handles Phase 2 dataset discovery, mapping to macro-classes, and NumPy loading."""
 
     def __init__(self, config):
         self.cfg = config
@@ -90,53 +90,39 @@ class StageTwoDataLoader:
             self._print_class_distribution(lbls, tag=f"  {name}")
         return splits
 
-    # ── Step 3: tf.data.Dataset Creation (RAM-safe) ────────────────────
-    def create_tf_dataset(
+    # ── Step 3: Load all files into NumPy arrays ───────────────────────
+    def load_arrays(
         self,
         file_paths: List[str],
         labels: List[str],
         preprocessor,
-        shuffle: bool = True,
-    ) -> tf.data.Dataset:
-        """Create a generic tf.data.Dataset.
-        Identical logic to the generic `data_loader.py` but using Phase 2 int labels.
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Process all files and return (X, y) as NumPy arrays.
+
+        Parameters
+        ----------
+        file_paths   : list of absolute paths to .wav files
+        labels       : list of string class labels
+        preprocessor : AudioPreprocessor with stats already computed
+
+        Returns
+        -------
+        X : np.ndarray, shape (N, n_mels, time_frames, 1), dtype float32
+        y : np.ndarray, shape (N,), dtype float32
         """
         label_to_idx = self.cfg.label_to_index
-        int_labels = [label_to_idx[l] for l in labels]
+        int_labels = np.array([label_to_idx[l] for l in labels], dtype=np.float32)
 
-        spec_shape = preprocessor.spectrogram_shape
+        specs = []
+        for path in tqdm(file_paths, desc="Loading spectrograms", unit="file"):
+            spec = preprocessor.process_single_file(path)
+            specs.append(spec)
 
-        def _process_file(path_tensor, label_tensor):
-            def _load(path_bytes, label_val):
-                path_str = path_bytes.decode("utf-8")
-                spec = preprocessor.process_single_file(path_str)
-                return spec, np.float32(label_val)
+        X = np.array(specs, dtype=np.float32)
+        y = int_labels
 
-            spec, label = tf.numpy_function(
-                _load,
-                [path_tensor, label_tensor],
-                [tf.float32, tf.float32],
-            )
-            spec.set_shape(spec_shape)
-            label.set_shape([])
-            return spec, label
-
-        ds = tf.data.Dataset.from_tensor_slices(
-            (file_paths, np.array(int_labels, dtype=np.float32))
-        )
-
-        if shuffle:
-            ds = ds.shuffle(
-                buffer_size=len(file_paths),
-                seed=self.cfg.random_seed,
-                reshuffle_each_iteration=True,
-            )
-
-        ds = ds.map(_process_file, num_parallel_calls=tf.data.AUTOTUNE)
-        ds = ds.batch(self.cfg.batch_size)
-        ds = ds.prefetch(tf.data.AUTOTUNE)
-
-        return ds
+        print(f"[StageTwoDataLoader] Loaded arrays: X={X.shape}, y={y.shape}")
+        return X, y
 
     # ── Helpers ────────────────────────────────────────────────────────
     @staticmethod

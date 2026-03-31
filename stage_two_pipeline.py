@@ -3,8 +3,8 @@ stage_two_pipeline.py — Master orchestrator for Stage 2: Expert Classifier.
 
 Pipeline phases:
   1. Load file paths, map to ['Pain', 'Hungry', 'Tired'], and stratify split
-  2. Compute Z-score stats from training files (RAM-safe)
-  3. Create tf.data.Dataset generators
+  2. Compute Z-score stats from training files
+  3. Load all spectrograms into NumPy arrays
   4. Build transfer learning model (frozen base, new head) & train
   5. Plot learning curves
   6. Evaluate Confusion Matrix on Validation AND Test sets
@@ -56,26 +56,19 @@ def main() -> None:
     print(f"[Pipeline] Expected spectrogram shape: {preprocessor.spectrogram_shape}")
 
     # ================================================================
-    # PHASE 3 — Create tf.data.Dataset Generators
+    # PHASE 3 — Load Spectrograms into NumPy Arrays
     # ================================================================
     print("\n" + "=" * 60)
-    print("  PHASE 3: Creating tf.data.Dataset Generators")
+    print("  PHASE 3: Loading Spectrograms into NumPy Arrays")
     print("=" * 60)
 
-    train_ds = loader.create_tf_dataset(
-        train_paths, train_labels, preprocessor, shuffle=True
-    )
-    val_ds = loader.create_tf_dataset(
-        val_paths, val_labels, preprocessor, shuffle=False
-    )
-    test_ds = loader.create_tf_dataset(
-        test_paths, test_labels, preprocessor, shuffle=False
-    )
+    X_train, y_train = loader.load_arrays(train_paths, train_labels, preprocessor)
+    X_val, y_val     = loader.load_arrays(val_paths, val_labels, preprocessor)
+    X_test, y_test   = loader.load_arrays(test_paths, test_labels, preprocessor)
 
-    # Peek at one batch
-    for spec_batch, label_batch in train_ds.take(1):
-        print(f"[Pipeline] Train batch shape: X={spec_batch.shape}, "
-              f"y={label_batch.shape}")
+    print(f"[Pipeline] Train: X={X_train.shape}, y={y_train.shape}")
+    print(f"[Pipeline] Val:   X={X_val.shape}, y={y_val.shape}")
+    print(f"[Pipeline] Test:  X={X_test.shape}, y={y_test.shape}")
 
     # ================================================================
     # PHASE 4 — Transfer Learning Model Architecture & Training
@@ -89,11 +82,9 @@ def main() -> None:
     trainer.build(input_shape)
 
     # Compute class weights for ['Pain', 'Hungry', 'Tired']
-    label_to_idx = cfg.label_to_index
-    y_train_int = np.array([label_to_idx[l] for l in train_labels])
-    unique_classes = np.unique(y_train_int)
+    unique_classes = np.unique(y_train.astype(int))
     balanced_weights = compute_class_weight(
-        class_weight="balanced", classes=unique_classes, y=y_train_int
+        class_weight="balanced", classes=unique_classes, y=y_train.astype(int)
     )
     class_weights = dict(zip(unique_classes.tolist(), balanced_weights))
 
@@ -102,7 +93,7 @@ def main() -> None:
         print(f"  {idx} ({cfg.index_to_label[idx]:>12s}): "
               f"{class_weights[idx]:.4f}")
 
-    history = trainer.train(train_ds, val_ds, class_weights=class_weights)
+    history = trainer.train(X_train, y_train, X_val, y_val, class_weights=class_weights)
     trainer.save()
     trainer.plot_learning_curves(history)
 
@@ -114,10 +105,10 @@ def main() -> None:
     print("=" * 60)
 
     print("\n→ Evaluating on Validation Split:")
-    trainer.evaluate(val_ds, split_name="Validation", confusion_matrix_save_path=cfg.confusion_matrix_val_path)
+    trainer.evaluate(X_val, y_val, split_name="Validation", confusion_matrix_save_path=cfg.confusion_matrix_val_path)
     
     print("\n→ Evaluating on Test Split:")
-    trainer.evaluate(test_ds, split_name="Test", confusion_matrix_save_path=cfg.confusion_matrix_test_path)
+    trainer.evaluate(X_test, y_test, split_name="Test", confusion_matrix_save_path=cfg.confusion_matrix_test_path)
 
     # ================================================================
     # PHASE 6 — Edge Deployment (INT8 Quantization)
@@ -126,11 +117,10 @@ def main() -> None:
     print("  PHASE 6: Edge Deployment — INT8 Quantization")
     print("=" * 60)
 
-    # Use generic quantizer logic from common file
     quantize_model(
         cfg,
         preprocessor=preprocessor,
-        representative_paths=train_paths[:200],  # RAM-safe calibration
+        representative_paths=train_paths[:200],
     )
 
     # ================================================================

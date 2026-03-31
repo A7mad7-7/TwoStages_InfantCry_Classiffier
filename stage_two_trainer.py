@@ -2,7 +2,7 @@
 stage_two_trainer.py — Training loop, learning curves, and evaluation
 for the Stage 2 Expert Classifier (multi-class).
 
-Accepts tf.data.Dataset objects.
+Accepts plain NumPy arrays for training and evaluation.
 Computes and saves separate Confusion Matrices for Validation and Test datasets.
 """
 
@@ -33,14 +33,25 @@ class StageTwoTrainer:
         self.model = build_transfer_model(self.cfg, input_shape)
         self.model.summary()
 
-    # ── Train (accepts tf.data.Dataset) ────────────────────────────────
+    # ── Train (accepts NumPy arrays) ───────────────────────────────────
     def train(
         self,
-        train_ds: tf.data.Dataset,
-        val_ds: tf.data.Dataset,
+        X_train: np.ndarray,
+        y_train: np.ndarray,
+        X_val: np.ndarray,
+        y_val: np.ndarray,
         class_weights: Optional[Dict[int, float]] = None,
     ) -> tf.keras.callbacks.History:
-        """Run the training loop with EarlyStopping + ReduceLROnPlateau."""
+        """Run the training loop with EarlyStopping + ReduceLROnPlateau.
+
+        Parameters
+        ----------
+        X_train      : np.ndarray, shape (N, n_mels, time_frames, 1)
+        y_train      : np.ndarray, shape (N,)
+        X_val        : np.ndarray, shape (M, n_mels, time_frames, 1)
+        y_val        : np.ndarray, shape (M,)
+        class_weights: dict {class_index: weight} or None
+        """
         callbacks = [
             EarlyStopping(
                 monitor="val_loss",
@@ -61,8 +72,9 @@ class StageTwoTrainer:
             print(f"[Trainer] Using class_weights: {class_weights}")
 
         history = self.model.fit(
-            train_ds,
-            validation_data=val_ds,
+            X_train, y_train,
+            validation_data=(X_val, y_val),
+            batch_size=self.cfg.batch_size,
             epochs=self.cfg.epochs,
             callbacks=callbacks,
             class_weight=class_weights,
@@ -105,37 +117,33 @@ class StageTwoTrainer:
         plt.close(fig)
         print(f"[Trainer] Learning curves saved → {self.cfg.learning_curves_path}")
 
-    # ── Evaluate on Dataset ────────────────────────────────────────────
+    # ── Evaluate on NumPy arrays ───────────────────────────────────────
     def evaluate(
         self,
-        dataset: tf.data.Dataset,
+        X: np.ndarray,
+        y: np.ndarray,
         split_name: str,
         confusion_matrix_save_path: str,
     ) -> None:
-        """Iterate over a tf.data.Dataset, compute predictions from logits, 
-        and print classification report + save confusion matrix.
+        """Compute predictions from logits and print classification report
+        + save confusion matrix.
+
+        Parameters
+        ----------
+        X          : np.ndarray, shape (N, n_mels, time_frames, 1)
+        y          : np.ndarray, shape (N,)
+        split_name : str — displayed in report header
+        confusion_matrix_save_path : str — where to save the CM plot
         """
-        all_y_true: List[int] = []
-        all_y_pred: List[int] = []
-
-        for X_batch, y_batch in dataset:
-            # Output is linear logits; argmax gives the predicted class
-            logits = self.model.predict(X_batch, verbose=0)
-            preds = np.argmax(logits, axis=1)
-            
-            all_y_true.extend(y_batch.numpy().astype(int).tolist())
-            all_y_pred.extend(preds.tolist())
-
-        y_true = np.array(all_y_true)
-        y_pred = np.array(all_y_pred)
+        logits = self.model.predict(X, batch_size=self.cfg.batch_size, verbose=0)
+        y_pred = np.argmax(logits, axis=1)
+        y_true = y.astype(int)
 
         # Classification Report
         target_names = self.cfg.class_names
         print(f"\n{'=' * 60}")
         print(f"  Classification Report — {split_name} Set (Stage 2)")
         print(f"{'=' * 60}")
-        
-        # Guard against predicting classes that don't exist
         print(classification_report(y_true, y_pred, target_names=target_names, zero_division=0))
 
         # Confusion Matrix

@@ -1,5 +1,5 @@
 """
-data_loader.py — File discovery, stratified splitting, and tf.data.Dataset
+data_loader.py — File discovery, stratified splitting, and NumPy array
 creation (COMMON module).
 
 Golden Rule: split FIRST, no data leakage between sets.
@@ -10,15 +10,15 @@ via constructor, making it stage-agnostic.
 
 import os
 from typing import List, Tuple, Dict
-from collections import Counter
 
 import numpy as np
-import tensorflow as tf
 from sklearn.model_selection import train_test_split
+from tqdm import tqdm
+from collections import Counter
 
 
 class DataLoader:
-    """Handles dataset discovery, splitting, and tf.data.Dataset creation."""
+    """Handles dataset discovery, splitting, and NumPy array creation."""
 
     def __init__(self, config):
         """
@@ -103,72 +103,39 @@ class DataLoader:
             self._print_class_distribution(lbls, tag=f"  {name}")
         return splits
 
-    # ── Step 3: tf.data.Dataset Creation (RAM-safe) ────────────────────
-    def create_tf_dataset(
+    # ── Step 3: Load all files into NumPy arrays ───────────────────────
+    def load_arrays(
         self,
         file_paths: List[str],
         labels: List[str],
         preprocessor,
-        shuffle: bool = True,
-    ) -> tf.data.Dataset:
-        """Create a tf.data.Dataset that yields (spectrogram, label) batches.
-
-        Each file is loaded and preprocessed ON-THE-FLY via tf.numpy_function,
-        so only one batch (~32 spectrograms) is ever in RAM at once.
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Process all files and return (X, y) as NumPy arrays.
 
         Parameters
         ----------
         file_paths   : list of absolute paths to .wav files
         labels       : list of string class labels
         preprocessor : AudioPreprocessor with stats already computed
-        shuffle      : whether to shuffle at the start of each epoch
 
         Returns
         -------
-        dataset : tf.data.Dataset yielding (spec, label) batches
-                  spec shape: (batch, n_mels, time_frames, 1)
-                  label shape: (batch,) float32
+        X : np.ndarray, shape (N, n_mels, time_frames, 1), dtype float32
+        y : np.ndarray, shape (N,), dtype float32
         """
-        # Convert string labels to integer indices
         label_to_idx = self.cfg.label_to_index
-        int_labels = [label_to_idx[l] for l in labels]
+        int_labels = np.array([label_to_idx[l] for l in labels], dtype=np.float32)
 
-        # Expected spectrogram shape (from config)
-        spec_shape = preprocessor.spectrogram_shape  # (n_mels, time_frames, 1)
+        specs = []
+        for path in tqdm(file_paths, desc="Loading spectrograms", unit="file"):
+            spec = preprocessor.process_single_file(path)
+            specs.append(spec)
 
-        def _process_file(path_tensor, label_tensor):
-            """Wrapper for tf.numpy_function."""
-            def _load(path_bytes, label_val):
-                path_str = path_bytes.decode("utf-8")
-                spec = preprocessor.process_single_file(path_str)
-                return spec, np.float32(label_val)
+        X = np.array(specs, dtype=np.float32)
+        y = int_labels
 
-            spec, label = tf.numpy_function(
-                _load,
-                [path_tensor, label_tensor],
-                [tf.float32, tf.float32],
-            )
-            # Set static shapes so Keras knows dimensions at graph-build time
-            spec.set_shape(spec_shape)
-            label.set_shape([])
-            return spec, label
-
-        ds = tf.data.Dataset.from_tensor_slices(
-            (file_paths, np.array(int_labels, dtype=np.float32))
-        )
-
-        if shuffle:
-            ds = ds.shuffle(
-                buffer_size=len(file_paths),
-                seed=self.cfg.random_seed,
-                reshuffle_each_iteration=True,
-            )
-
-        ds = ds.map(_process_file, num_parallel_calls=tf.data.AUTOTUNE)
-        ds = ds.batch(self.cfg.batch_size)
-        ds = ds.prefetch(tf.data.AUTOTUNE)
-
-        return ds
+        print(f"[DataLoader] Loaded arrays: X={X.shape}, y={y.shape}")
+        return X, y
 
     # ── Helpers ────────────────────────────────────────────────────────
     @staticmethod

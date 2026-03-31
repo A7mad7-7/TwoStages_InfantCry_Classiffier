@@ -99,7 +99,7 @@ class AudioPreprocessor:
         assert self.mean is not None, "Call compute_stats_streaming() first!"
         return (spectrogram - self.mean) / self.std
 
-    # ── Full single-file pipeline (used by tf.data) ────────────────────
+    # ── Full single-file pipeline ──────────────────────────────────────
     def process_single_file(self, path: str) -> np.ndarray:
         """Load → pad/truncate → mel spec → normalize → add channel dim.
 

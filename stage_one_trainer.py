@@ -2,7 +2,7 @@
 stage_one_trainer.py — Training loop, learning curves, and test-set evaluation
 for the Stage 1 Gatekeeper (binary classifier).
 
-Accepts tf.data.Dataset objects for RAM-efficient training.
+Accepts plain NumPy arrays for training and evaluation.
 """
 
 import os
@@ -32,19 +32,23 @@ class Trainer:
         self.model = build_model(self.cfg, input_shape)
         self.model.summary()
 
-    # ── Train (accepts tf.data.Dataset) ────────────────────────────────
+    # ── Train (accepts NumPy arrays) ───────────────────────────────────
     def train(
         self,
-        train_ds: tf.data.Dataset,
-        val_ds: tf.data.Dataset,
+        X_train: np.ndarray,
+        y_train: np.ndarray,
+        X_val: np.ndarray,
+        y_val: np.ndarray,
         class_weights: Optional[Dict[int, float]] = None,
     ) -> tf.keras.callbacks.History:
         """Run the training loop with EarlyStopping + ReduceLROnPlateau.
 
         Parameters
         ----------
-        train_ds     : tf.data.Dataset yielding (spec_batch, label_batch)
-        val_ds       : tf.data.Dataset yielding (spec_batch, label_batch)
+        X_train      : np.ndarray, shape (N, n_mels, time_frames, 1)
+        y_train      : np.ndarray, shape (N,)
+        X_val        : np.ndarray, shape (M, n_mels, time_frames, 1)
+        y_val        : np.ndarray, shape (M,)
         class_weights: dict {class_index: weight} or None
         """
         callbacks = [
@@ -67,8 +71,9 @@ class Trainer:
             print(f"[Trainer] Using class_weights: {class_weights}")
 
         history = self.model.fit(
-            train_ds,
-            validation_data=val_ds,
+            X_train, y_train,
+            validation_data=(X_val, y_val),
+            batch_size=self.cfg.batch_size,
             epochs=self.cfg.epochs,
             callbacks=callbacks,
             class_weight=class_weights,
@@ -111,31 +116,24 @@ class Trainer:
         plt.close(fig)
         print(f"[Trainer] Learning curves saved → {self.cfg.learning_curves_path}")
 
-    # ── Evaluate on Test Set (from tf.data.Dataset) ────────────────────
+    # ── Evaluate on NumPy arrays ───────────────────────────────────────
     def evaluate(
         self,
-        dataset: tf.data.Dataset,
+        X: np.ndarray,
+        y: np.ndarray,
         split_name: str = "Test",
     ) -> None:
-        """Iterate over a tf.data.Dataset, collect predictions, and print
-        classification report + confusion matrix.
+        """Compute predictions and print classification report + confusion matrix.
 
         Parameters
         ----------
-        dataset    : tf.data.Dataset yielding (spec_batch, label_batch)
-        split_name : str — displayed in report header
+        X          : np.ndarray, shape (N, n_mels, time_frames, 1)
+        y          : np.ndarray, shape (N,)
+        split_name : str — displayed in the report header
         """
-        all_y_true: List[int] = []
-        all_y_pred: List[int] = []
-
-        for X_batch, y_batch in dataset:
-            probs = self.model.predict(X_batch, verbose=0).flatten()
-            preds = (probs >= 0.5).astype(int)
-            all_y_true.extend(y_batch.numpy().astype(int).tolist())
-            all_y_pred.extend(preds.tolist())
-
-        y_true = np.array(all_y_true)
-        y_pred = np.array(all_y_pred)
+        probs = self.model.predict(X, batch_size=self.cfg.batch_size, verbose=0).flatten()
+        y_pred = (probs >= 0.5).astype(int)
+        y_true = y.astype(int)
 
         # Classification Report
         target_names = self.cfg.class_names
