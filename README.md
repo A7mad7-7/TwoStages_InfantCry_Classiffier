@@ -26,8 +26,8 @@ Audio processing on Edge devices requires strict standardization to prevent "Sho
 
 ### 3. Hardware Sensor Fusion (Raspberry Pi + Arduino)
 To ensure real-time performance without blocking the AI inference thread, the hardware logic is distributed:
-*   **The Brain (Raspberry Pi 4):** Runs the TFLite models, manages the state machine, and hosts a local lightweight Web Dashboard (Flask/FastAPI) for parents.
-*   **The Spinal Cord (Arduino):** Connects via Serial USB. It continuously polls the I2C/Analog sensors (DS18B20, Pulse Sensor) and drives the NEMA 23 Stepper Motor using non-blocking timers (`millis()`).
+*   **The Brain (Raspberry Pi 4):** Runs the TFLite models, manages the state machine, and hosts a local lightweight Web Dashboard for parents. The dashboard is powered by the **Waitress WSGI** production server, ensuring lightweight, cross-platform compatibility on ARM devices while safely allowing multiple concurrent parent connections.
+*   **The Spinal Cord (Arduino):** Connects via Serial USB (115200 baud). It continuously polls the I2C/Analog sensors (DS18B20, Pulse Sensor) and drives the NEMA 23 Stepper Motor using non-blocking timers (`millis()`).
 *   **The Handshake:** When the Pi detects a cry, it sends a single-byte command (`C`) to the Arduino to start a 3-minute motor rocking cooldown.
 
 ### 4. Edge Optimization
@@ -35,9 +35,29 @@ Both CNN models undergo **INT8 Post-Training Quantization (PTQ)**. The spatial d
 
 ---
 
-## 🚀 How to Run (Local Testing)
+---
+
+## 🚀 How to Run (Local Training & Testing)
 1. Install requirements: `pip install -r requirements.txt`
 2. Run the data cleaner: `python prepare_raw_data.py`
 3. Train Stage 1: `python stage_one_pipeline.py`
 4. Train Stage 2: `python stage_two_pipeline.py`
 5. Test the main system loop (Mock Sensors): `python main_system.py`
+
+---
+
+## 📡 Edge Deployment (Raspberry Pi 4)
+The system is designed for a completely headless, plug-and-play production environment using the `setup_pi.sh` script.
+
+**What `setup_pi.sh` does natively:**
+1. **Isolated Environment & Dependencies:** Installs the core Debian audio drivers and builds an isolated Python `venv` using the extremely slim `requirements_pi.txt` (using `tflite-runtime` instead of bloated TensorFlow).
+2. **Wi-Fi Access Point (Hotspot):** Utilizes `nmcli` (NetworkManager) to decouple the Crib from unreliable home routers. The Pi broadcasts its own open network termed **`SmartCrib_WiFi`** with a hardcoded IP of `192.168.4.1`.
+3. **Systemd Auto-Boot:** Writes and enables a `smartcrib.service` daemon file to the OS. The Brain state machine will automatically boot and restart on failures instantly.
+
+**To deploy:**
+```bash
+chmod +x setup_pi.sh
+./setup_pi.sh
+sudo reboot
+# Parents can now connect to "SmartCrib_WiFi" and navigate to http://192.168.4.1:5000
+```

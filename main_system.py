@@ -68,6 +68,12 @@ except ImportError:
 # Web Dashboard
 from flask import Flask, jsonify, render_template_string
 
+try:
+    from waitress import serve as waitress_serve
+except ImportError:
+    waitress_serve = None
+    print("[WARN] waitress not installed. Falling back to Flask dev server.")
+
 
 # ═══════════════════════════════════════════════════════════════════════
 # CONFIGURATION
@@ -104,9 +110,10 @@ class SystemConfig:
     serial_baud: int = 115200
     serial_timeout: float = 1.0
 
-    # ── Flask Dashboard ────────────────────────────────────────────────
-    dashboard_host: str = "0.0.0.0"
+    # ── Flask Dashboard (Waitress WSGI) ────────────────────────────────
+    dashboard_host: str = "0.0.0.0"     # Listen on ALL interfaces (LAN-accessible)
     dashboard_port: int = 5000
+    dashboard_threads: int = 3          # Max concurrent dashboard clients
 
     # ── Class Labels ───────────────────────────────────────────────────
     stage1_labels = ["NO_RESPONSE", "CRY"]
@@ -549,7 +556,7 @@ DASHBOARD_HTML = """
                     'Last update: ' + d.last_update;
             } catch(e) { console.error(e); }
         }
-        setInterval(refresh, 2000);
+        setInterval(refresh, 1000);
         window.onload = refresh;
     </script>
 </head>
@@ -658,22 +665,43 @@ class SmartCribBrain:
         self.audio.start()
         self.arduino.start()
 
-        # Start Flask in a daemon thread
+        # Start dashboard via Waitress (production WSGI) in a daemon thread
         app = create_dashboard_app(self.shared)
-        flask_thread = threading.Thread(
-            target=lambda: app.run(
-                host=self.cfg.dashboard_host,
-                port=self.cfg.dashboard_port,
-                debug=False,
-                use_reloader=False,
-            ),
-            name="FlaskDashboard",
-            daemon=True,
-        )
-        flask_thread.start()
+
+        if waitress_serve is not None:
+            # Waitress: production-grade, cross-platform, limited to N threads
+            dashboard_thread = threading.Thread(
+                target=lambda: waitress_serve(
+                    app,
+                    host=self.cfg.dashboard_host,
+                    port=self.cfg.dashboard_port,
+                    threads=self.cfg.dashboard_threads,
+                    _quiet=True,            # Suppress Waitress access logs
+                ),
+                name="WaitressDashboard",
+                daemon=True,
+            )
+        else:
+            # Fallback: Flask dev server (NOT recommended for production)
+            self.logger.warning(
+                "Waitress not installed — using Flask dev server as fallback."
+            )
+            dashboard_thread = threading.Thread(
+                target=lambda: app.run(
+                    host=self.cfg.dashboard_host,
+                    port=self.cfg.dashboard_port,
+                    debug=False,
+                    use_reloader=False,
+                ),
+                name="FlaskDashboard",
+                daemon=True,
+            )
+
+        dashboard_thread.start()
         self.logger.info(
             f"🌐 Dashboard running at http://{self.cfg.dashboard_host}:"
-            f"{self.cfg.dashboard_port}/"
+            f"{self.cfg.dashboard_port}/ "
+            f"(max {self.cfg.dashboard_threads} concurrent clients)"
         )
 
         self.logger.info("🧠 State Machine started — entering LISTENING state.")

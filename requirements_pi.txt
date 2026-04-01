@@ -1,0 +1,11 @@
+librosa>=0.9.0
+numpy>=1.21.0
+sounddevice>=0.4.5
+pyserial>=3.5
+Flask>=2.2.0
+waitress>=2.1.0
+
+# Use tflite-runtime on the Pi for much faster/lighter installation.
+# (If installing on a non-Pi dev machine where tflite-runtime is unavailable via pip, 
+# you can use full tensorflow instead).
+tflite-runtime>=2.14.0
