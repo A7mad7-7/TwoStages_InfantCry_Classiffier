@@ -3,7 +3,7 @@ stage_one_pipeline.py — Master orchestrator for Stage 1: Gatekeeper (Binary).
 
 Pipeline phases:
   1. Load file paths & stratified split (70/15/15)
-  2. Compute Z-score stats from training files (streaming)
+  2. Initialize preprocessor (fixed-range normalization)
   3. Load all spectrograms into NumPy arrays
   4. Build & train 4-block binary CNN
   5. Plot learning curves
@@ -40,15 +40,13 @@ def main() -> None:
     test_paths, test_labels = splits["test"]
 
     # ================================================================
-    # PHASE 2 — Compute Z-Score Stats (Streaming)
+    # PHASE 2 — Preprocessor Initialization
     # ================================================================
     print("\n" + "=" * 60)
-    print("  PHASE 2: Computing Z-Score Statistics (Training Set Only)")
+    print("  PHASE 2: Preprocessor Initialization (Instance Norm)")
     print("=" * 60)
 
     preprocessor = AudioPreprocessor(cfg)
-    preprocessor.compute_stats_streaming(train_paths)
-
     print(f"[Pipeline] Expected spectrogram shape: {preprocessor.spectrogram_shape}")
 
     # ================================================================

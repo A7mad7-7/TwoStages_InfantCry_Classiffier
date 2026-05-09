@@ -16,13 +16,13 @@ class Config:
 
     # ── Paths ──────────────────────────────────────────────────────────
     dataset_dir: str = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "Stage_Two_Data"
+        os.path.dirname(os.path.abspath(__file__)), "clean_data", "Stage_Two_Data"
     )
-    output_dir: str = os.path.join(
+    output_dir: str = "/content/drive/MyDrive/code/Stage_two_output" if os.path.exists("/content/drive/MyDrive/code") else os.path.join(
         os.path.dirname(os.path.abspath(__file__)), "Stage_two_output"
     )
-    stage1_model_path: str = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "Stage_one_output", "stage1_model.keras"
+    stage1_model_path: str = "/content/drive/MyDrive/code/Stage_one_output/stage1_gatekeeper.keras" if os.path.exists("/content/drive/MyDrive/code") else os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "Stage_one_output", "stage1_gatekeeper.keras"
     )
 
     # ── Audio Parameters (MUST Match Stage 1) ──────────────────────────
@@ -43,9 +43,9 @@ class Config:
     random_seed: int = 42
 
     # ── Training ───────────────────────────────────────────────────────
-    learning_rate: float = 1e-4        # Lower LR for fine-tuning
-    batch_size: int = 32
-    epochs: int = 50
+    learning_rate: float = 1e-5        # Lower LR for fine-tuning
+    batch_size: int = 16
+    epochs: int = 80
     early_stop_patience: int = 10
     reduce_lr_patience: int = 3
     reduce_lr_factor: float = 0.5

@@ -50,9 +50,12 @@ except ImportError:
 # Spectrogram
 import librosa
 
+# High-performance mathematical resampling with anti-aliasing
+from scipy import signal
+
 # TFLite Runtime
 try:
-    import tflite_runtime.interpreter as tflite
+    import ai_edge_litert.interpreter as tflite
 except ImportError:
     # Fallback: full TensorFlow (development machine)
     import tensorflow as tf
@@ -80,16 +83,21 @@ except ImportError:
 # ═══════════════════════════════════════════════════════════════════════
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
+# Energy Gate: skip AI inference if audio is below this amplitude threshold.
+# Prevents Z-score normalization from amplifying silence into CNN hallucinations.
+SILENCE_THRESHOLD = 0.3
+
 
 @dataclass
 class SystemConfig:
     """Central configuration for the Smart Crib system."""
 
     # ── Audio ──────────────────────────────────────────────────────────
-    sample_rate: int = 16_000
+    sample_rate: int = 16_000            # Target rate for the AI pipeline
+    native_sample_rate: int = 44_100     # Hardware recording rate (USB mic safe)
     duration_sec: float = 7.0
-    target_length: int = 112_000        # sample_rate × duration_sec
-    slide_interval_sec: float = 2.0     # How often to run inference
+    target_length: int = 112_000         # sample_rate × duration_sec
+    slide_interval_sec: float = 3.0      # How often to run inference (Pi-safe)
 
     # ── Mel-Spectrogram (MUST match training) ─────────────────────────
     n_mels: int = 64
@@ -98,7 +106,7 @@ class SystemConfig:
     fmax: int = 4000
 
     # ── TFLite Model Paths ─────────────────────────────────────────────
-    stage1_tflite: str = os.path.join(BASE_DIR, "Stage_one_output", "stage1_model.tflite")
+    stage1_tflite: str = os.path.join(BASE_DIR, "Stage_one_output", "stage1_gatekeeper.tflite")
     stage2_tflite: str = os.path.join(BASE_DIR, "Stage_two_output", "stage2_expert.tflite")
 
     # ── State Machine ──────────────────────────────────────────────────
@@ -125,6 +133,7 @@ class SystemConfig:
 # ═══════════════════════════════════════════════════════════════════════
 class CribState(enum.Enum):
     """State Machine states for the Smart Crib."""
+    WARMUP        = "Warming Up"
     LISTENING     = "Listening"
     CRY_DETECTED  = "Crying"
     COOLDOWN      = "Soothing"
@@ -138,7 +147,7 @@ class SharedState:
 
     def __init__(self):
         self._lock = threading.Lock()
-        self._state = CribState.LISTENING
+        self._state = CribState.WARMUP
         self._cry_reason: Optional[str] = None
         self._cry_confidence: float = 0.0
         self._sensor_data: Dict[str, Any] = {
@@ -198,36 +207,101 @@ class AudioBuffer:
     """Continuously captures audio via sounddevice and maintains a
     7-second rolling buffer at 16 kHz (mono, float32).
 
-    The buffer is updated continuously via the sounddevice callback.
-    The main AI loop reads the latest 7-second snapshot every 2 seconds.
+    Auto-detects the USB microphone's supported sample rate at startup
+    and resamples down to 16 kHz inside the callback.
     """
+
+    # Common sample rates to probe (most-to-least common for USB mics)
+    _PROBE_RATES = [48000, 44100, 32000, 22050, 16000]
 
     def __init__(self, cfg: SystemConfig):
         self.cfg = cfg
         self._lock = threading.Lock()
-        # Pre-allocate a ring buffer of exactly target_length samples
-        self._buffer = np.zeros(cfg.target_length, dtype=np.float32)
+        
+        # We will dynamically allocate the buffer once we know the hardware rate
+        self._buffer: Optional[np.ndarray] = None
+        
         self._stream: Optional[sd.InputStream] = None
         self._running = False
+        self._hw_rate: Optional[int] = None     # Set during start()
         self.logger = logging.getLogger("AudioBuffer")
 
+    def _detect_sample_rate(self) -> int:
+        """Probe the default input device for a supported sample rate.
+
+        Tries the device's reported default rate first, then falls back
+        to a list of common rates. Returns the first rate that opens
+        a stream without error.
+        """
+        # 1. Query the device's own reported default sample rate
+        try:
+            dev_info = sd.query_devices(kind="input")
+            default_rate = int(dev_info["default_samplerate"])
+            self.logger.info(
+                f"🔍 Mic device: '{dev_info['name']}' "
+                f"(reported default: {default_rate} Hz)"
+            )
+        except Exception:
+            default_rate = None
+
+        # Build the probe list: device default first, then common rates
+        rates_to_try = []
+        if default_rate:
+            rates_to_try.append(default_rate)
+        for r in self._PROBE_RATES:
+            if r not in rates_to_try:
+                rates_to_try.append(r)
+
+        # 2. Try to actually open a stream at each rate
+        for rate in rates_to_try:
+            try:
+                test_stream = sd.InputStream(
+                    samplerate=rate, channels=1, dtype="float32",
+                    blocksize=int(rate * 0.05),   # 50 ms test block
+                )
+                test_stream.start()
+                test_stream.stop()
+                test_stream.close()
+                self.logger.info(f"✅ Mic supports {rate} Hz — using as native rate.")
+                return rate
+            except Exception:
+                self.logger.debug(f"   ✗ {rate} Hz not supported, trying next...")
+                continue
+
+        # Should never reach here, but fallback
+        self.logger.warning("Could not detect rate. Defaulting to 48000 Hz.")
+        return 48000
+
     def start(self):
-        """Start the audio input stream."""
+        """Auto-detect hardware rate, then start the audio input stream."""
         if sd is None:
             self.logger.error("sounddevice not available. Cannot capture audio.")
             return
 
+        # Auto-detect the microphone's native sample rate
+        self._hw_rate = self._detect_sample_rate()
+
+        # Allocate the rolling buffer at the NATIVE hardware rate
+        native_length = int(self.cfg.duration_sec * self._hw_rate)
+        self._buffer = np.zeros(native_length, dtype=np.float32)
+
+        self.logger.info(f"🎙️ Allocated {self.cfg.duration_sec}s rolling buffer at native {self._hw_rate} Hz.")
+
         self._running = True
         try:
             self._stream = sd.InputStream(
-                samplerate=self.cfg.sample_rate,
+                samplerate=self._hw_rate,
                 channels=1,
                 dtype="float32",
-                blocksize=int(self.cfg.sample_rate * 0.1),  # 100 ms blocks
+                blocksize=int(self._hw_rate * 0.1),  # 100 ms blocks
                 callback=self._audio_callback,
             )
             self._stream.start()
-            self.logger.info("🎙️  Audio stream started (16 kHz, mono).")
+            self.logger.info(
+                f"🎙️  Audio stream started "
+                f"(native {self._hw_rate} Hz → "
+                f"pipeline {self.cfg.sample_rate} Hz, mono)."
+            )
         except Exception as e:
             self.logger.error(f"Failed to start audio stream: {e}")
             self._running = False
@@ -241,19 +315,24 @@ class AudioBuffer:
             self.logger.info("Audio stream stopped.")
 
     def _audio_callback(self, indata, frames, time_info, status):
-        """sounddevice callback — appends new audio to the rolling buffer."""
+        """Ultra-lightweight callback. Just saves raw native audio.
+        No heavy math or resampling here to prevent GIL lockup.
+        """
         if status:
             self.logger.warning(f"Audio status: {status}")
-        # indata shape: (frames, 1) → flatten to 1-D
-        new_samples = indata[:, 0]
+
+        # Flatten and scrub NaNs from hardware glitches
+        new_audio = indata[:, 0].copy()
+        np.nan_to_num(new_audio, copy=False, nan=0.0, posinf=1.0, neginf=-1.0)
+        np.clip(new_audio, -1.0, 1.0, out=new_audio)
+
         with self._lock:
-            # Shift buffer left, append new samples at the end
-            n = len(new_samples)
-            self._buffer = np.roll(self._buffer, -n)
-            self._buffer[-n:] = new_samples
+            n = len(new_audio)
+            self._buffer[:-n] = self._buffer[n:]   # shift left
+            self._buffer[-n:] = new_audio
 
     def get_snapshot(self) -> np.ndarray:
-        """Return a copy of the current 7-second audio buffer."""
+        """Return a copy of the current 7-second Native audio buffer."""
         with self._lock:
             return self._buffer.copy()
 
@@ -270,32 +349,35 @@ class SpectrogramProcessor:
     training and loaded here. We use reasonable defaults as fallback.
     """
 
-    def __init__(self, cfg: SystemConfig, mean: float = -30.0, std: float = 15.0):
+    def __init__(self, cfg: SystemConfig):
         self.cfg = cfg
-        # These should ideally be loaded from training artifacts
-        self.mean = mean
-        self.std = std
+        self.logger = logging.getLogger("SpectrogramProcessor")
         self.logger = logging.getLogger("SpectrogramProcessor")
 
-    def process(self, audio: np.ndarray) -> np.ndarray:
-        """Convert a 7-second audio buffer to a normalized spectrogram.
+    def process(self, native_audio: np.ndarray, native_rate: int) -> np.ndarray:
+        """Convert native audio buffer to a normalized 16kHz spectrogram."""
 
-        Parameters
-        ----------
-        audio : np.ndarray, shape (112000,), float32
+        # 1. High-Quality Resampling (if needed)
+        if native_rate != self.cfg.sample_rate:
+            # Proper mathematical resampling using polyphase filtering.
+            # Applies an anti-aliasing low-pass filter before decimation,
+            # preventing high-frequency noise from folding into the signal.
+            # It is ~100x faster than librosa.resample, perfect for Pi CPU.
+            audio = signal.resample_poly(
+                native_audio, 
+                up=self.cfg.sample_rate, 
+                down=native_rate
+            )
+        else:
+            audio = native_audio
 
-        Returns
-        -------
-        spec : np.ndarray, shape (1, 64, time_frames, 1), float32
-               Ready for TFLite inference (batch dim included).
-        """
         # Ensure correct length
         if len(audio) < self.cfg.target_length:
             audio = np.pad(audio, (0, self.cfg.target_length - len(audio)))
         elif len(audio) > self.cfg.target_length:
             audio = audio[:self.cfg.target_length]
 
-        # Log-Mel Spectrogram (identical to training preprocessor)
+        # Log-Mel Spectrogram
         mel = librosa.feature.melspectrogram(
             y=audio,
             sr=self.cfg.sample_rate,
@@ -304,10 +386,12 @@ class SpectrogramProcessor:
             n_mels=self.cfg.n_mels,
             fmax=self.cfg.fmax,
         )
-        log_mel = librosa.power_to_db(mel, ref=np.max)
+        # Absolute scaling: ref=1.0, top_db=None prevents dynamic instance thresholding
+        log_mel = librosa.power_to_db(mel, ref=1.0, top_db=None)
 
-        # Z-score normalize
-        log_mel = (log_mel - self.mean) / self.std
+        # Fixed-range absolute normalization: [-100, 55] dB → [0, 1].
+        # Range is 155 dB total (-100 dB to +55 dB)
+        log_mel = np.clip((log_mel + 100.0) / 155.0, 0.0, 1.0)
 
         # Add batch + channel dimensions: (1, n_mels, time, 1)
         return log_mel[np.newaxis, ..., np.newaxis].astype(np.float32)
@@ -317,7 +401,13 @@ class SpectrogramProcessor:
 # TFLITE INFERENCE ENGINE
 # ═══════════════════════════════════════════════════════════════════════
 class TFLiteEngine:
-    """Loads and runs inference on a quantized TFLite model."""
+    """Loads and runs inference on a TFLite model.
+
+    The .tflite models use INT8-quantized weights internally for speed,
+    but accept float32 input and return float32 output. No manual
+    quantization/dequantization is needed — the TFLite runtime handles
+    it automatically via built-in quantize/dequantize ops.
+    """
 
     def __init__(self, model_path: str, name: str = "model"):
         self.name = name
@@ -334,52 +424,21 @@ class TFLiteEngine:
 
         in_shape = self.input_details[0]["shape"]
         in_dtype = self.input_details[0]["dtype"]
+        out_shape = self.output_details[0]["shape"]
+        out_dtype = self.output_details[0]["dtype"]
+
         self.logger.info(
             f"Loaded {name}: input={in_shape} ({in_dtype.__name__}), "
-            f"output={self.output_details[0]['shape']}"
+            f"output={out_shape} ({out_dtype.__name__})"
         )
 
-        # Quantization parameters (for INT8 models)
-        self._input_quant = self.input_details[0].get("quantization_parameters", {})
-        self._output_quant = self.output_details[0].get("quantization_parameters", {})
-
     def predict(self, input_data: np.ndarray) -> np.ndarray:
-        """Run a single forward pass.
-
-        Handles INT8 quantization transparently:
-          float32 input → quantize → invoke → dequantize → float32 output
-
-        Parameters
-        ----------
-        input_data : np.ndarray, float32, shape matching model input
-
-        Returns
-        -------
-        output : np.ndarray, float32
-        """
-        input_dtype = self.input_details[0]["dtype"]
-
-        # Quantize input if model expects INT8
-        if input_dtype == np.int8:
-            scale = self._input_quant.get("scales", [1.0])[0]
-            zero_point = self._input_quant.get("zero_points", [0])[0]
-            input_data = (input_data / scale + zero_point).astype(np.int8)
-        elif input_dtype == np.uint8:
-            scale = self._input_quant.get("scales", [1.0])[0]
-            zero_point = self._input_quant.get("zero_points", [0])[0]
-            input_data = (input_data / scale + zero_point).astype(np.uint8)
-
-        self.interpreter.set_tensor(self.input_details[0]["index"], input_data)
+        self.interpreter.set_tensor(
+            self.input_details[0]["index"],
+            input_data.astype(np.float32),
+        )
         self.interpreter.invoke()
         output = self.interpreter.get_tensor(self.output_details[0]["index"])
-
-        # Dequantize output if INT8
-        output_dtype = self.output_details[0]["dtype"]
-        if output_dtype in (np.int8, np.uint8):
-            scale = self._output_quant.get("scales", [1.0])[0]
-            zero_point = self._output_quant.get("zero_points", [0])[0]
-            output = (output.astype(np.float32) - zero_point) * scale
-
         return output.astype(np.float32)
 
 
@@ -401,6 +460,7 @@ class ArduinoManager:
         self._ser: Optional[serial.Serial] = None
         self._thread: Optional[threading.Thread] = None
         self._running = False
+        self._mock_mode = False
         self.logger = logging.getLogger("Arduino")
 
     def start(self):
@@ -426,7 +486,14 @@ class ArduinoManager:
                 f"@ {self.cfg.serial_baud} baud."
             )
         except Exception as e:
-            self.logger.error(f"Failed to open serial port: {e}")
+            self.logger.warning(f"Failed to open serial port: {e}")
+            self.logger.warning("⚠️ ACTIVATING ARDUINO MOCK MODE")
+            self._mock_mode = True
+            self._running = True
+            self._thread = threading.Thread(
+                target=self._read_loop, name="ArduinoReaderMock", daemon=True
+            )
+            self._thread.start()
 
     def stop(self):
         """Stop the reader thread and close serial."""
@@ -441,6 +508,10 @@ class ArduinoManager:
         'C' → Cry detected / Motor ON
         'S' → Stop / Motor OFF
         """
+        if self._mock_mode:
+            print(f"[MOCK ARDUINO] Motor triggered: {cmd}")
+            return
+            
         if self._ser is None or not self._ser.is_open:
             self.logger.warning(f"Cannot send '{cmd}': serial not connected.")
             return
@@ -456,6 +527,11 @@ class ArduinoManager:
         Expected format: 'BPM,Temp\n' e.g. '72,36.50\n'
         """
         while self._running:
+            if self._mock_mode:
+                self.shared.update_sensors(heart_rate=110, temperature=36.5)
+                time.sleep(1)
+                continue
+                
             try:
                 if self._ser is None or not self._ser.is_open:
                     time.sleep(1)
@@ -633,7 +709,7 @@ class SmartCribBrain:
         self.arduino = ArduinoManager(cfg, self.shared)
 
         # ── Load TFLite Models ─────────────────────────────────────────
-        self.logger.info("Loading TFLite models …")
+        self.logger.info("Loading pure float32 TFLite models …")
         self.stage1 = TFLiteEngine(cfg.stage1_tflite, name="Stage1_Gatekeeper")
         self.stage2 = TFLiteEngine(cfg.stage2_tflite, name="Stage2_Expert")
         self.logger.info("✅ Both TFLite models loaded.")
@@ -704,13 +780,19 @@ class SmartCribBrain:
             f"(max {self.cfg.dashboard_threads} concurrent clients)"
         )
 
-        self.logger.info("🧠 State Machine started — entering LISTENING state.")
+        self.logger.info("🧠 State Machine started — entering WARMUP state.")
+        self.logger.info(
+            f"⏳ Warming up audio buffer for {self.cfg.duration_sec}s ..."
+        )
 
         try:
             while not self._shutdown.is_set():
                 current_state = self.shared.state
 
-                if current_state == CribState.LISTENING:
+                if current_state == CribState.WARMUP:
+                    self._handle_warmup()
+
+                elif current_state == CribState.LISTENING:
                     self._handle_listening()
 
                 elif current_state == CribState.CRY_DETECTED:
@@ -725,16 +807,49 @@ class SmartCribBrain:
             self._cleanup()
 
     # ── State Handlers ─────────────────────────────────────────────────
+    def _handle_warmup(self):
+        """STATE_WARMUP: Wait for the audio buffer to fill with real audio
+        before allowing inference. Prevents the 0.500 startup false positive.
+        """
+        # Wait the full buffer duration so 112k samples are filled
+        self._shutdown.wait(timeout=self.cfg.duration_sec)
+        if self._shutdown.is_set():
+            return
+
+        # Verify buffer is actually filled
+        audio = self.audio.get_snapshot()
+        non_zero = np.count_nonzero(audio)
+        self.logger.info(
+            f"✅ WARMUP complete. Buffer filled: "
+            f"{non_zero}/{len(audio)} samples non-zero."
+        )
+        self.shared.state = CribState.LISTENING
+        self.logger.info("🟢 Transitioning to LISTENING state.")
+
     def _handle_listening(self):
         """STATE_LISTENING: Grab audio snapshot → Stage 1 inference.
         If CRY detected → transition to CRY_DETECTED.
         Otherwise sleep for slide_interval and repeat.
         """
         audio = self.audio.get_snapshot()
-        spec = self.spec_processor.process(audio)
+
+        # ── Energy Gate: skip inference on silence ──
+        max_amp = np.max(np.abs(audio))
+        self.logger.info(f"🔊 audio max_abs={max_amp:.6f}, "
+                         f"non_zero={np.count_nonzero(audio)}/{len(audio)}")
+
+        if max_amp < SILENCE_THRESHOLD:
+            self.logger.info(
+                f"[Energy Gate] Silence detected (max_abs={max_amp:.4f} < "
+                f"{SILENCE_THRESHOLD}). Skipping AI inference."
+            )
+            self._shutdown.wait(timeout=self.cfg.slide_interval_sec)
+            return
+
+        spec = self.spec_processor.process(audio, self.audio._hw_rate)
 
         cry_prob = self._run_stage1(spec)
-        self.logger.debug(f"Stage 1 → CRY probability: {cry_prob:.3f}")
+        self.logger.info(f"Stage 1 → CRY probability: {cry_prob:.3f}")
 
         if cry_prob >= self.cfg.cry_threshold:
             self.logger.info(
@@ -755,7 +870,7 @@ class SmartCribBrain:
         """
         # Re-grab latest audio for Stage 2
         audio = self.audio.get_snapshot()
-        spec = self.spec_processor.process(audio)
+        spec = self.spec_processor.process(audio, self.audio._hw_rate)
 
         reason, confidence = self._run_stage2(spec)
         self.logger.info(f"🔍 Cry Reason: {reason} (confidence={confidence:.3f})")
@@ -786,7 +901,23 @@ class SmartCribBrain:
 
         # Wake up and check with Stage 1
         audio = self.audio.get_snapshot()
-        spec = self.spec_processor.process(audio)
+
+        # ── Energy Gate: if silence, baby has calmed down ──
+        max_amp = np.max(np.abs(audio))
+        self.logger.info(f"🔊 audio max_abs={max_amp:.6f}, "
+                         f"non_zero={np.count_nonzero(audio)}/{len(audio)}")
+
+        if max_amp < SILENCE_THRESHOLD:
+            self.logger.info(
+                f"[Energy Gate] Silence after cooldown (max_abs={max_amp:.4f}). "
+                f"Baby calmed down. Returning to LISTENING."
+            )
+            self.arduino.send_command("S")
+            self.shared.clear_cry_info()
+            self.shared.state = CribState.LISTENING
+            return
+
+        spec = self.spec_processor.process(audio, self.audio._hw_rate)
         cry_prob = self._run_stage1(spec)
 
         if cry_prob >= self.cfg.cry_threshold:

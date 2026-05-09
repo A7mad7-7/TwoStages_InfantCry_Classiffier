@@ -18,8 +18,8 @@ class Config:
     dataset_dir: str = os.path.join(
         os.path.dirname(os.path.abspath(__file__)), "clean_data", "Stage_One_Data"
     )
-    output_dir: str = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "output"
+    output_dir: str = "/content/drive/MyDrive/code/Stage_one_output" if os.path.exists("/content/drive/MyDrive/code") else os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "Stage_one_output"
     )
 
     # ── Audio Parameters ───────────────────────────────────────────────

@@ -3,7 +3,7 @@ stage_two_pipeline.py — Master orchestrator for Stage 2: Expert Classifier.
 
 Pipeline phases:
   1. Load file paths, map to ['Pain', 'Hungry', 'Tired'], and stratify split
-  2. Compute Z-score stats from training files
+  2. Initialize preprocessor (fixed-range normalization)
   3. Load all spectrograms into NumPy arrays
   4. Build transfer learning model (frozen base, new head) & train
   5. Plot learning curves
@@ -45,14 +45,13 @@ def main() -> None:
     test_paths, test_labels = splits["test"]
 
     # ================================================================
-    # PHASE 2 — Compute Z-Score Stats
+    # PHASE 2 — Preprocessor Initialization
     # ================================================================
     print("\n" + "=" * 60)
-    print("  PHASE 2: Computing Z-Score Statistics (Stage 2 Train Data)")
+    print("  PHASE 2: Preprocessor Initialization (Instance Norm)")
     print("=" * 60)
 
     preprocessor = AudioPreprocessor(cfg)
-    preprocessor.compute_stats_streaming(train_paths)
     print(f"[Pipeline] Expected spectrogram shape: {preprocessor.spectrogram_shape}")
 
     # ================================================================

@@ -64,12 +64,13 @@ def quantize_model(
 
     converter.representative_dataset = representative_dataset_gen
 
-    # Request full integer quantization
+    # Request INT8 quantization for weights, but keep float32 I/O
+    # This avoids manual quantize/dequantize math in the inference engine
     converter.target_spec.supported_ops = [
         tf.lite.OpsSet.TFLITE_BUILTINS_INT8
     ]
-    converter.inference_input_type = tf.int8
-    converter.inference_output_type = tf.int8
+    converter.inference_input_type = tf.float32    # ← float32 in
+    converter.inference_output_type = tf.float32   # ← float32 out
 
     # ── Convert & Save ─────────────────────────────────────────────────
     print("[Quantize] Converting to INT8 TFLite …")

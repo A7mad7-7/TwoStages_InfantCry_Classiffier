@@ -1,7 +1,7 @@
 """
 preprocessor.py — Audio-to-spectrogram preprocessing (COMMON module).
 
-Converts raw 16kHz audio → fixed-length → Log-Mel Spectrogram → Z-score normalized.
+Converts raw 16kHz audio → fixed-length → Log-Mel Spectrogram → Fixed-range [0,1] normalized.
 Reusable by both Stage 1 and Stage 2 pipelines.
 
 CRITICAL: Uses fmax from config to cap frequency range.
@@ -10,15 +10,15 @@ This module does NOT import any config directly — it receives config
 via constructor, making it stage-agnostic.
 """
 
-from typing import List, Optional
+# from typing import List, Optional
 
 import numpy as np
 import librosa
-from tqdm import tqdm
+# from tqdm import tqdm
 
 
 class AudioPreprocessor:
-    """Stateful preprocessor that stores training-set normalization stats."""
+    """Stateless preprocessor with fixed-range normalization (no training stats needed)."""
 
     def __init__(self, config):
         """
@@ -28,9 +28,6 @@ class AudioPreprocessor:
             sample_rate, target_length, n_fft, hop_length, n_mels, fmax
         """
         self.cfg = config
-        # Z-score stats — set after calling compute_stats_streaming()
-        self.mean: Optional[float] = None
-        self.std: Optional[float] = None
 
     # ── Single-File Processing ─────────────────────────────────────────
     def load_and_resample(self, path: str) -> np.ndarray:
@@ -61,43 +58,20 @@ class AudioPreprocessor:
             n_mels=self.cfg.n_mels,
             fmax=self.cfg.fmax,
         )
-        log_mel = librosa.power_to_db(mel, ref=np.max)
+        # Absolute scaling: ref=1.0, top_db=None prevents dynamic instance thresholding
+        log_mel = librosa.power_to_db(mel, ref=1.0, top_db=None)
         return log_mel
 
-    # ── Streaming Z-Score Stats (RAM-safe) ─────────────────────────────
-    def compute_stats_streaming(self, file_paths: List[str]) -> None:
-        """Compute global mean & std from training files WITHOUT loading all
-        spectrograms into RAM. Processes one file at a time.
-
-        Uses the numerically stable two-pass online formula:
-          mean = sum(x) / N
-          std  = sqrt( sum(x²)/N - mean² )
-        """
-        total_sum = 0.0
-        total_sq_sum = 0.0
-        total_count = 0
-
-        for path in tqdm(file_paths, desc="Computing Z-score stats", unit="file"):
-            audio = self.load_and_resample(path)
-            audio = self.pad_or_truncate(audio)
-            spec = self.to_log_mel_spectrogram(audio)
-            total_sum += np.sum(spec)
-            total_sq_sum += np.sum(spec ** 2)
-            total_count += spec.size
-
-        self.mean = total_sum / total_count
-        variance = (total_sq_sum / total_count) - (self.mean ** 2)
-        self.std = np.sqrt(max(variance, 0.0))
-        if self.std < 1e-8:
-            self.std = 1e-8
-
-        print(f"[Preprocessor] Training stats  →  mean={self.mean:.4f}, "
-              f"std={self.std:.4f}")
-
     def normalize(self, spectrogram: np.ndarray) -> np.ndarray:
-        """Z-score normalize using precomputed training-set statistics."""
-        assert self.mean is not None, "Call compute_stats_streaming() first!"
-        return (spectrogram - self.mean) / self.std
+        """Fixed-range absolute normalization: [-100, 55] dB → [0, 1].
+
+        Unlike relative normalization, this preserves absolute energy differences:
+          - Pure silence (1e-10 amplitude) stays near 0 (-100 dB → 0.0)
+          - Loud background noise reaches ~0.45 (~15 dB)
+          - Screaming cries reach ~0.8+ (~20-55 dB)
+        """
+        # Range is 155 dB total (-100 dB to +55 dB)
+        return np.clip((spectrogram + 100.0) / 155.0, 0.0, 1.0)
 
     # ── Full single-file pipeline ──────────────────────────────────────
     def process_single_file(self, path: str) -> np.ndarray:
