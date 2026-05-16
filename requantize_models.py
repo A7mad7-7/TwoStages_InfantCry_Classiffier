@@ -71,7 +71,7 @@ if __name__ == "__main__":
 
     # ── Stage 1: Gatekeeper ────────────────────────────────────────────
     requantize(
-        keras_path=os.path.join(BASE_DIR, "Stage_one_output", "stage1_gatekeeper_finetuned.keras"),
+        keras_path=os.path.join(BASE_DIR, "Stage_one_output", "stage1_gatekeeper.keras"),
         tflite_path=os.path.join(BASE_DIR, "Stage_one_output", "stage1_gatekeeper.tflite"),
         name="Stage 1 — Gatekeeper (CRY vs NO_RESPONSE)",
     )

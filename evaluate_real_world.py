@@ -12,7 +12,9 @@ def main():
 
     # 1. Setup paths
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    model_path = os.path.join(base_dir, "Stage_one_output", "stage1_gatekeeper_finetuned.keras")
+    # model_path = os.path.join(base_dir, "Stage_one_output", "stage1_gatekeeper_finetuned.keras")
+    model_path = os.path.join(base_dir, "Stage_one_output", "stage1_gatekeeper.keras")
+
 
     bg_noise_dir = os.path.join(base_dir, "collected_background_noise")
 

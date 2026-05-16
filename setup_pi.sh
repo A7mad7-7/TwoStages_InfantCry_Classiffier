@@ -73,8 +73,8 @@ After=network-online.target sound.target
 Type=simple
 User=$USER_NAME
 WorkingDirectory=$CURRENT_DIR
-Environment="PATH=$CURRENT_DIR/venv_pi/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-ExecStart=$CURRENT_DIR/venv_pi/bin/python $CURRENT_DIR/main_system.py
+Environment="PATH=$CURRENT_DIR/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+ExecStart=$CURRENT_DIR/venv/bin/python $CURRENT_DIR/main_system.py
 
 Restart=always
 RestartSec=10
@@ -96,5 +96,5 @@ echo "  ✅ Setup Complete!                                     "
 echo "========================================================="
 echo "  1. Reboot the Pi:             sudo reboot"
 echo "  2. Connect Parent Phone to:   SmartCrib_WiFi (Open Network)"
-echo "  3. Open Browser to:           http://192.168.4.1:5000"
+echo "  3. Open Browser to:           ch"
 echo "========================================================="

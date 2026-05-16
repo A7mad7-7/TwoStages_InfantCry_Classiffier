@@ -83,9 +83,19 @@ except ImportError:
 # ═══════════════════════════════════════════════════════════════════════
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# Energy Gate: skip AI inference if audio is below this amplitude threshold.
-# Prevents Z-score normalization from amplifying silence into CNN hallucinations.
-SILENCE_THRESHOLD = 0.3
+# ── DSP Pre-Filter Thresholds ─────────────────────────────────────────
+# Gate 1: RMS Energy Gate — measures sustained signal power over the full
+# 7-second window. Unlike np.max(np.abs()), RMS ignores brief spikes and
+# only passes audio with continuous energy (i.e., real vocalizations).
+# Pi noise floor RMS ≈ 0.005–0.008; faint cry RMS ≈ 0.02–0.05.
+RMS_THRESHOLD = 0.015
+
+# Gate 2: Spectrogram PAPR (Peak-to-Average Power Ratio) — computed on
+# the temporal energy envelope of the mel spectrogram. High PAPR means
+# energy is concentrated in 1–2 frames (impulse: clap, slam). Low PAPR
+# means energy is spread across many frames (continuous: cry, speech).
+# Empirical: impulses > 15, cries < 8.
+PAPR_THRESHOLD = 12.0
 
 
 @dataclass
@@ -827,27 +837,67 @@ class SmartCribBrain:
         self.logger.info("🟢 Transitioning to LISTENING state.")
 
     def _handle_listening(self):
-        """STATE_LISTENING: Grab audio snapshot → Stage 1 inference.
+        """STATE_LISTENING: Grab audio snapshot → two-stage DSP pre-filter
+        → Stage 1 CNN inference.
         If CRY detected → transition to CRY_DETECTED.
         Otherwise sleep for slide_interval and repeat.
         """
         audio = self.audio.get_snapshot()
 
-        # ── Energy Gate: skip inference on silence ──
+        # ════════════════════════════════════════════════════════════════
+        # DSP PRE-FILTER GATE 1: RMS Energy Gate
+        # Measures sustained signal power over the full 7s window.
+        # Rejects silence AND low-energy impulses in microseconds.
+        # ════════════════════════════════════════════════════════════════
+        rms = np.sqrt(np.mean(audio ** 2))
         max_amp = np.max(np.abs(audio))
-        self.logger.info(f"🔊 audio max_abs={max_amp:.6f}, "
-                         f"non_zero={np.count_nonzero(audio)}/{len(audio)}")
+        self.logger.info(
+            f"🔊 audio rms={rms:.6f}, max_abs={max_amp:.6f}, "
+            f"non_zero={np.count_nonzero(audio)}/{len(audio)}"
+        )
 
-        if max_amp < SILENCE_THRESHOLD:
+        if rms < RMS_THRESHOLD:
             self.logger.info(
-                f"[Energy Gate] Silence detected (max_abs={max_amp:.4f} < "
-                f"{SILENCE_THRESHOLD}). Skipping AI inference."
+                f"[RMS Gate] Low sustained energy (rms={rms:.4f} < "
+                f"{RMS_THRESHOLD}). Skipping AI inference."
             )
             self._shutdown.wait(timeout=self.cfg.slide_interval_sec)
             return
 
+        # ════════════════════════════════════════════════════════════════
+        # SPECTROGRAM COMPUTATION
+        # ════════════════════════════════════════════════════════════════
         spec = self.spec_processor.process(audio, self.audio._hw_rate)
 
+        # ════════════════════════════════════════════════════════════════
+        # DSP PRE-FILTER GATE 2: Spectrogram PAPR (Peak-to-Average
+        # Power Ratio) Gate — detects impulsive transients.
+        # Collapse the spectrogram to a 1D temporal energy envelope,
+        # then check if energy is concentrated in a few frames.
+        # ════════════════════════════════════════════════════════════════
+        # spec shape: (1, n_mels, time_frames, 1) → squeeze to (n_mels, time)
+        spec_2d = spec[0, :, :, 0]
+        temporal_energy = np.mean(spec_2d, axis=0)       # mean across freq bins
+        mean_energy = np.mean(temporal_energy)
+
+        if mean_energy > 1e-6:  # avoid division by zero on dead silence
+            papr = np.max(temporal_energy) / mean_energy
+        else:
+            papr = 0.0
+
+        self.logger.info(f"📊 PAPR={papr:.2f} (threshold={PAPR_THRESHOLD})")
+
+        if papr > PAPR_THRESHOLD:
+            self.logger.info(
+                f"[PAPR Gate] Impulsive transient detected (PAPR={papr:.2f} > "
+                f"{PAPR_THRESHOLD}). Skipping AI inference."
+            )
+            self._shutdown.wait(timeout=self.cfg.slide_interval_sec)
+            return
+
+        # ════════════════════════════════════════════════════════════════
+        # STAGE 1 CNN INFERENCE (only reached by sustained, non-impulsive audio)
+        # ════════════════════════════════════════════════════════════════
         cry_prob = self._run_stage1(spec)
         self.logger.info(f"Stage 1 → CRY probability: {cry_prob:.3f}")
 
@@ -902,14 +952,14 @@ class SmartCribBrain:
         # Wake up and check with Stage 1
         audio = self.audio.get_snapshot()
 
-        # ── Energy Gate: if silence, baby has calmed down ──
-        max_amp = np.max(np.abs(audio))
-        self.logger.info(f"🔊 audio max_abs={max_amp:.6f}, "
+        # ── RMS Energy Gate: if silence, baby has calmed down ──
+        rms = np.sqrt(np.mean(audio ** 2))
+        self.logger.info(f"🔊 audio rms={rms:.6f}, "
                          f"non_zero={np.count_nonzero(audio)}/{len(audio)}")
 
-        if max_amp < SILENCE_THRESHOLD:
+        if rms < RMS_THRESHOLD:
             self.logger.info(
-                f"[Energy Gate] Silence after cooldown (max_abs={max_amp:.4f}). "
+                f"[RMS Gate] Silence after cooldown (rms={rms:.4f}). "
                 f"Baby calmed down. Returning to LISTENING."
             )
             self.arduino.send_command("S")
