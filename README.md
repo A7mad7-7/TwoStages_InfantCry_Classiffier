@@ -1,4 +1,4 @@
-# 🍼 Smart Crib: Two-Stage Edge AI Infant Cry Classifier
+# Smart Crib: Two-Stage Edge AI Infant Cry Classifier
 
 > **Status:** Software Architecture Complete. V1 Models Trained and Quantized. Pending physical deployment and testing on Raspberry Pi 4.
 
@@ -37,7 +37,7 @@ Both CNN models undergo **INT8 Post-Training Quantization (PTQ)**. The spatial d
 
 ---
 
-## 🚀 How to Run (Local Training & Testing)
+## How to Run (Local Training & Testing)
 1. Install requirements: `pip install -r requirements.txt`
 2. Run the data cleaner: `python prepare_raw_data.py`
 3. Train Stage 1: `python stage_one_pipeline.py`
