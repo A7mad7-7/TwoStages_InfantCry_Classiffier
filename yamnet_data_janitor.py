@@ -16,9 +16,9 @@ import tensorflow_hub as hub
 from tqdm import tqdm
 
 # ── CONFIGURATION ────────────────────────────────────────────────────────────
-SOURCE_DIR = "data/noise_esc50"
-APPROVED_DIR = "data/approved_NO_RESPONSE"
-REJECTED_DIR = "data/rejected_noise"
+SOURCE_DIR = "yamnet_outdata/noise_esc50"
+APPROVED_DIR = "yamnet_outdata/approved_NO_RESPONSE"
+REJECTED_DIR = "yamnet_outdata/rejected_noise"
 
 # YAMNet Class Indices for "Crying"
 # 20: Crying, sobbing

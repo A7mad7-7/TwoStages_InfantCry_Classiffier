@@ -27,8 +27,8 @@ class Config:
 
     # ── Audio Parameters (MUST Match Stage 1) ──────────────────────────
     sample_rate: int = 16_000
-    duration_sec: float = 7.0
-    target_length: int = 112_000
+    duration_sec: float = 10.0
+    target_length: int = 160_000
 
     # ── Mel-Spectrogram (MUST Match Stage 1) ───────────────────────────
     n_mels: int = 64

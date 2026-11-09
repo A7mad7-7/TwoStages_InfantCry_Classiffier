@@ -38,10 +38,12 @@ from dataclasses import dataclass, field
 from typing import Optional, Dict, Any
 from datetime import datetime
 
+# pyrefly: ignore [missing-import]
 import numpy as np
 
 # Audio
 try:
+    # pyrefly: ignore [missing-import]
     import sounddevice as sd
 except ImportError:
     sd = None
@@ -105,8 +107,8 @@ class SystemConfig:
     # ── Audio ──────────────────────────────────────────────────────────
     sample_rate: int = 16_000            # Target rate for the AI pipeline
     native_sample_rate: int = 44_100     # Hardware recording rate (USB mic safe)
-    duration_sec: float = 7.0
-    target_length: int = 112_000         # sample_rate × duration_sec
+    duration_sec: float = 10.0
+    target_length: int = 160_000         # sample_rate × duration_sec
     slide_interval_sec: float = 3.0      # How often to run inference (Pi-safe)
 
     # ── Mel-Spectrogram (MUST match training) ─────────────────────────
@@ -120,7 +122,8 @@ class SystemConfig:
     stage2_tflite: str = os.path.join(BASE_DIR, "Stage_two_output", "stage2_expert.tflite")
 
     # ── State Machine ──────────────────────────────────────────────────
-    cry_threshold: float = 0.5         # Stage 1 sigmoid threshold
+    cry_threshold: float = 0.75        # Stage 1 sigmoid threshold (raised to reduce borderline FPs)
+    cry_confirm_required: int = 2      # Consecutive above-threshold windows required to confirm a cry
     cooldown_sec: float = 60.0         # Seconds to sleep after cry detected
 
     # ── Arduino Serial ─────────────────────────────────────────────────
@@ -724,6 +727,12 @@ class SmartCribBrain:
         self.stage2 = TFLiteEngine(cfg.stage2_tflite, name="Stage2_Expert")
         self.logger.info("✅ Both TFLite models loaded.")
 
+        # ── Dual-Window Confirmation Counter ───────────────────────────
+        # Requires N consecutive above-threshold detections before
+        # transitioning to CRY_DETECTED. Prevents one-off noise spikes
+        # from triggering false alarms.
+        self._consecutive_cry_count = 0
+
     # ── Inference helpers ──────────────────────────────────────────────
     def _run_stage1(self, spec: np.ndarray) -> float:
         """Return the CRY probability (0.0 – 1.0) from Stage 1."""
@@ -902,12 +911,32 @@ class SmartCribBrain:
         self.logger.info(f"Stage 1 → CRY probability: {cry_prob:.3f}")
 
         if cry_prob >= self.cfg.cry_threshold:
+            self._consecutive_cry_count += 1
             self.logger.info(
-                f"🚨 CRY DETECTED (prob={cry_prob:.3f}). "
-                f"Transitioning to CRY_DETECTED."
+                f"⚠️ Cry signal #{self._consecutive_cry_count}/"
+                f"{self.cfg.cry_confirm_required} "
+                f"(prob={cry_prob:.3f} >= {self.cfg.cry_threshold})"
             )
-            self.shared.state = CribState.CRY_DETECTED
+
+            if self._consecutive_cry_count >= self.cfg.cry_confirm_required:
+                self.logger.info(
+                    f"🚨 CRY CONFIRMED after {self._consecutive_cry_count} "
+                    f"consecutive detections. Transitioning to CRY_DETECTED."
+                )
+                self._consecutive_cry_count = 0
+                self.shared.state = CribState.CRY_DETECTED
+            else:
+                # Wait for next window to confirm
+                self._shutdown.wait(timeout=self.cfg.slide_interval_sec)
         else:
+            # Reset counter — cry signal was not sustained
+            if self._consecutive_cry_count > 0:
+                self.logger.info(
+                    f"🔄 Cry counter reset (prob={cry_prob:.3f} < "
+                    f"{self.cfg.cry_threshold}). Was {self._consecutive_cry_count}/"
+                    f"{self.cfg.cry_confirm_required}."
+                )
+                self._consecutive_cry_count = 0
             # No cry — wait and listen again
             self._shutdown.wait(timeout=self.cfg.slide_interval_sec)
 

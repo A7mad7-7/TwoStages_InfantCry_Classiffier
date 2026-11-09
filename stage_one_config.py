@@ -18,14 +18,46 @@ class Config:
     dataset_dir: str = os.path.join(
         os.path.dirname(os.path.abspath(__file__)), "clean_data", "Stage_One_Data"
     )
+    cry_dataset_dir: str = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "Data_set", "audio"
+    )
+    no_response_dataset_dir: str = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "clean_data", "Stage_One_Data", "NO_RESPONSE"
+    )
+    yamnet_filter_suffix: str = "_yamnet75"
+
     output_dir: str = "/content/drive/MyDrive/code/Stage_one_output" if os.path.exists("/content/drive/MyDrive/code") else os.path.join(
         os.path.dirname(os.path.abspath(__file__)), "Stage_one_output"
     )
 
+    # ── NO_RESPONSE Group Splits (Prevent Data Leakage across sessions) ──
+    train_video_groups: List[str] = field(default_factory=lambda: [
+        "BILL_GATES_REVEALS_I_Was_Wrong_About_Success_128KBPS",
+        "Best_Of_Andrew_Wilson_On_The_Whatever_Podcast_2024_128KBPS",
+        "How_to_Communicate_With_Confidence_Ease_From_Harvard_Business_School_s_1_Professor_128KBPS",
+        "Let_it_all_out.._The_Group_Chat_Podcast_130_128KBPS",
+        "man",
+        "dude_miaowing",
+        "white_noise",
+        "collected_background_noise",
+        "collected_background_noise1",
+    ])
+    val_video_groups: List[str] = field(default_factory=lambda: [
+        "womens",
+        "exercise_bike",
+        "running_tap",
+    ])
+    test_video_groups: List[str] = field(default_factory=lambda: [
+        "Confidence_isn_t_loud_here_s_how_to_find_your_voice_Nimi_Mehta_128KBPS",
+        "man-woman",
+        "doing_the_dishes",
+        "pink_noise",
+    ])
+
     # ── Audio Parameters ───────────────────────────────────────────────
     sample_rate: int = 16_000           # Target sample rate in Hz
-    duration_sec: float = 7.0           # Fixed clip length in seconds
-    target_length: int = 112_000        # sample_rate * duration_sec
+    duration_sec: float = 10.0          # Fixed clip length in seconds (10s)
+    target_length: int = 160_000        # sample_rate * duration_sec (160k samples)
 
     # ── Mel-Spectrogram Parameters ─────────────────────────────────────
     n_mels: int = 64                    # Mel-frequency bins
@@ -41,7 +73,7 @@ class Config:
 
     # ── Training ───────────────────────────────────────────────────────
     learning_rate: float = 1e-3
-    batch_size: int = 32
+    batch_size: int = 16
     epochs: int = 50
     early_stop_patience: int = 10
     reduce_lr_patience: int = 3

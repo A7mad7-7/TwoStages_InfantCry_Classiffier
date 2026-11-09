@@ -12,6 +12,7 @@ Pipeline phases:
 """
 
 import numpy as np
+import tensorflow as tf
 from sklearn.utils.class_weight import compute_class_weight
 
 from stage_one_config import Config
@@ -22,6 +23,20 @@ from quantize import quantize_model
 
 
 def main() -> None:
+    # ── GPU Verification & Memory Growth Configuration ──────────────────
+    gpus = tf.config.list_physical_devices("GPU")
+    if not gpus:
+        raise RuntimeError(
+            "❌ [CRITICAL ERROR] No GPU detected! As per instructions, "
+            "training will NOT start on CPU. Please ensure GPU (Quadro P1000) is accessible."
+        )
+    for gpu in gpus:
+        try:
+            tf.config.experimental.set_memory_growth(gpu, True)
+        except Exception as e:
+            print(f"[Warning] Could not set memory growth: {e}")
+    print(f"🚀 [Hardware] GPU detected and activated: {gpus}")
+
     cfg = Config()
 
     # ================================================================
@@ -32,8 +47,7 @@ def main() -> None:
     print("=" * 60)
 
     loader = DataLoader(cfg)
-    file_paths, labels = loader.load_file_paths()
-    splits = loader.split_data(file_paths, labels)
+    splits = loader.load_splits()
 
     train_paths, train_labels = splits["train"]
     val_paths, val_labels = splits["val"]

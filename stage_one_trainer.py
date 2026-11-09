@@ -70,10 +70,18 @@ class Trainer:
         if class_weights is not None:
             print(f"[Trainer] Using class_weights: {class_weights}")
 
+        # Stream batches asynchronously from CPU to GPU VRAM to keep GPU memory usage small & optimal
+        with tf.device("/CPU:0"):
+            train_ds = tf.data.Dataset.from_tensor_slices((X_train, y_train))
+            train_ds = train_ds.shuffle(buffer_size=1024, seed=self.cfg.random_seed)
+            train_ds = train_ds.batch(self.cfg.batch_size).prefetch(tf.data.AUTOTUNE)
+
+            val_ds = tf.data.Dataset.from_tensor_slices((X_val, y_val))
+            val_ds = val_ds.batch(self.cfg.batch_size).prefetch(tf.data.AUTOTUNE)
+
         history = self.model.fit(
-            X_train, y_train,
-            validation_data=(X_val, y_val),
-            batch_size=self.cfg.batch_size,
+            train_ds,
+            validation_data=val_ds,
             epochs=self.cfg.epochs,
             callbacks=callbacks,
             class_weight=class_weights,
@@ -131,7 +139,10 @@ class Trainer:
         y          : np.ndarray, shape (N,)
         split_name : str — displayed in the report header
         """
-        probs = self.model.predict(X, batch_size=self.cfg.batch_size, verbose=0).flatten()
+        with tf.device("/CPU:0"):
+            eval_ds = tf.data.Dataset.from_tensor_slices(X).batch(self.cfg.batch_size).prefetch(tf.data.AUTOTUNE)
+
+        probs = self.model.predict(eval_ds, verbose=0).flatten()
         y_pred = (probs >= 0.5).astype(int)
         y_true = y.astype(int)
 

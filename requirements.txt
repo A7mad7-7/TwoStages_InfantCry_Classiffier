@@ -9,6 +9,7 @@ matplotlib
 tensorflow
 scikit-learn
 xgboost
+tensorflow_hub
 
 # Utilities
 pathlib

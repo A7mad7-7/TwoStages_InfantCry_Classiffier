@@ -71,10 +71,18 @@ class StageTwoTrainer:
         if class_weights is not None:
             print(f"[Trainer] Using class_weights: {class_weights}")
 
+        # Stream batches asynchronously from CPU to GPU VRAM to prevent OOM
+        with tf.device("/CPU:0"):
+            train_ds = tf.data.Dataset.from_tensor_slices((X_train, y_train))
+            train_ds = train_ds.shuffle(buffer_size=1024, seed=self.cfg.random_seed)
+            train_ds = train_ds.batch(self.cfg.batch_size).prefetch(tf.data.AUTOTUNE)
+
+            val_ds = tf.data.Dataset.from_tensor_slices((X_val, y_val))
+            val_ds = val_ds.batch(self.cfg.batch_size).prefetch(tf.data.AUTOTUNE)
+
         history = self.model.fit(
-            X_train, y_train,
-            validation_data=(X_val, y_val),
-            batch_size=self.cfg.batch_size,
+            train_ds,
+            validation_data=val_ds,
             epochs=self.cfg.epochs,
             callbacks=callbacks,
             class_weight=class_weights,

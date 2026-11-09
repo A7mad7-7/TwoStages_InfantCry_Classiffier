@@ -14,6 +14,10 @@ via constructor, making it stage-agnostic.
 
 import numpy as np
 import librosa
+try:
+    import soundfile as sf
+except ImportError:
+    sf = None
 # from tqdm import tqdm
 
 
@@ -32,6 +36,16 @@ class AudioPreprocessor:
     # ── Single-File Processing ─────────────────────────────────────────
     def load_and_resample(self, path: str) -> np.ndarray:
         """Load an audio file and resample to the target sample rate."""
+        if sf is not None:
+            try:
+                audio, sr = sf.read(path, dtype="float32")
+                if audio.ndim > 1:
+                    audio = np.mean(audio, axis=1)
+                if sr != self.cfg.sample_rate:
+                    audio = librosa.resample(audio, orig_sr=sr, target_sr=self.cfg.sample_rate)
+                return audio
+            except Exception:
+                pass
         audio, _ = librosa.load(path, sr=self.cfg.sample_rate)
         return audio
 

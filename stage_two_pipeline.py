@@ -11,6 +11,7 @@ Pipeline phases:
   7. Quantize → INT8 TFLite for Edge Deployment
 """
 
+import tensorflow as tf
 import numpy as np
 from sklearn.utils.class_weight import compute_class_weight
 
@@ -22,6 +23,20 @@ from quantize import quantize_model
 
 
 def main() -> None:
+    # ── GPU Verification & Memory Growth Configuration ──────────────────
+    gpus = tf.config.list_physical_devices("GPU")
+    if not gpus:
+        raise RuntimeError(
+            "❌ [CRITICAL ERROR] No GPU detected! As per instructions, "
+            "training will NOT start on CPU. Please ensure GPU (Quadro P1000) is accessible."
+        )
+    for gpu in gpus:
+        try:
+            tf.config.experimental.set_memory_growth(gpu, True)
+        except Exception as e:
+            print(f"[Warning] Could not set memory growth: {e}")
+    print(f"🚀 [Hardware] GPU detected and activated: {gpus}")
+
     cfg = Config()
 
     # ================================================================

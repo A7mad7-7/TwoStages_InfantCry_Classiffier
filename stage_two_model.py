@@ -4,7 +4,7 @@ stage_two_model.py — Transfer Learning Model for Stage 2 Expert Classifier.
 Loads the saved stage1_gatekeeper.keras model.
 Freezes the base convolutional layers (Conv2D & BatchNormalization).
 Removes the old binary head and attaches a new 3-class classification head:
-  Flatten → Dense(64) → Dropout(0.4) → Dense(32) → Dropout(0.2) → Dense(3, linear)
+  GlobalAveragePooling2D → Dense(64) → Dropout(0.4) → Dense(32) → Dropout(0.2) → Dense(3, linear)
 """
 
 import tensorflow as tf
@@ -49,28 +49,27 @@ def build_transfer_model(config, input_shape: tuple) -> Model:
     feature_extractor = Model(inputs=base_model.input, outputs=conv_output, name="Stage1_Feature_Extractor")
 
     # ── FREEZE THE BASE LAYERS ─────────────────────────────────────────
-    # We freeze Block 1, 2, and 3. We UNFREEZE Block 4 ('conv4' and 'bn4') 
-    # to fine-tune the deepest spatial features for Stage 2.
+    # We freeze Block 1 and 2. We UNFREEZE Block 3 and 4 ('conv3', 'gn3', 'conv4', 'gn4') 
+    # to fine-tune deeper spatial and harmonic representations for Stage 2.
     frozen_count = 0
     unfrozen_count = 0
+    norm_layers = (layers.Conv2D, layers.BatchNormalization, layers.GroupNormalization)
     for layer in feature_extractor.layers:
-        if isinstance(layer, (layers.Conv2D, layers.BatchNormalization)):
-            if "4" in layer.name:  # 'conv4', 'bn4', etc.
+        if isinstance(layer, norm_layers):
+            if any(b in layer.name for b in ("3", "4")):  # 'conv3', 'gn3', 'conv4', 'gn4', etc.
                 layer.trainable = True
                 unfrozen_count += 1
             else:
                 layer.trainable = False
                 frozen_count += 1
             
-    print(f"[Model] Froze {frozen_count} Conv2D/BN layers from blocks 1-3.")
-    print(f"[Model] Unfroze {unfrozen_count} Conv2D/BN layers from block 4.")
+    print(f"[Model] Froze {frozen_count} Conv2D/Norm layers from blocks 1-2.")
+    print(f"[Model] Unfroze {unfrozen_count} Conv2D/Norm layers from blocks 3-4.")
 
     # ── ATTACH NEW STAGE 2 HEAD ────────────────────────────────────────
-    x = layers.Flatten(name="stage2_flatten")(feature_extractor.output)
-    x = layers.Dense(64, activation="relu", name="stage2_dense1")(x)
-    x = layers.Dropout(0.4, name="stage2_dropout1")(x)
-    x = layers.Dense(32, activation="relu", name="stage2_dense2")(x)
-    x = layers.Dropout(0.2, name="stage2_dropout2")(x)
+    x = layers.GlobalAveragePooling2D(name="stage2_gap")(feature_extractor.output)
+    x = layers.Dense(32, activation="relu", name="stage2_dense1")(x)
+    x = layers.Dropout(0.2, name="stage2_dropout1")(x)
     
     # 3-class output (linear for from_logits=True)
     outputs = layers.Dense(config.num_classes, activation="linear", name="stage2_logits")(x)
